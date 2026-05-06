@@ -1,283 +1,440 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { BookOpen, Check, X as XIcon, ArrowRight, NotebookPen, CheckCircle2, XCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { 
+  BookOpen, Search, Keyboard, FileText, Headphones, Award, Trophy, 
+  AlertCircle, UserCircle2, BookText, Globe, FlaskConical, Calculator, 
+  LayoutList, PenLine, ChevronLeft, ArrowRight
+} from 'lucide-react';
 import { REAL_WORDS, FAKE_WORDS } from './data/words';
-import { TopBar } from './components/TopBar';
-import { FeedbackBanner } from './components/FeedbackBanner';
-import { useSpeech } from './hooks/useSpeech';
+import WordRecognition from './components/WordRecognition';
+import ContextualSpelling from './components/ContextualSpelling';
+import ReadAndComplete from './components/ReadAndComplete';
+import Dictation from './components/Dictation';
+import GedReading from './components/GedReading';
+
+// Import our new JSON file
+import gedData from './data/gedContent.json';
 
 export default function App() {
-  const [gameState, setGameState] = useState('START'); // START, P1_Q, P1_A, P2_Q, P2_A, SUMMARY
-  const [roundIndex, setRoundIndex] = useState(0);
+  const [appState, setAppState] = useState('MENU'); 
+  const [activeRound, setActiveRound] = useState(0);
+  const [activeGedLesson, setActiveGedLesson] = useState(null); // Tracks which specific GED lesson is open
   const [currentPool, setCurrentPool] = useState([]);
-  const [p2Words, setP2Words] = useState([]);
-  const [wordIndex, setWordIndex] = useState(0);
-  const [scores, setScores] = useState({});
-  const [timer, setTimer] = useState(5);
-  const [userAnswer, setUserAnswer] = useState(null);
-  const [p2Input, setP2Input] = useState('');
-  const inputRef = useRef(null);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  
+  const [profile, setProfile] = useState(() => {
+    const saved = localStorage.getItem('betProfile');
+    return saved ? JSON.parse(saved) : { name: '', praId: '' };
+  });
 
-  const { speak } = useSpeech();
+  const [tempProfile, setTempProfile] = useState({ name: '', praId: '' });
 
+  // DET Scores
   const [roundScores, setRoundScores] = useState(() => {
-    const saved = localStorage.getItem('detVocabScores');
-    if (saved) {
-      try { return JSON.parse(saved); } catch (e) { return {}; }
-    }
-    return {};
+    const saved = localStorage.getItem('betScoresV6');
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  // NEW: GED Scores
+  const [gedScores, setGedScores] = useState(() => {
+    const saved = localStorage.getItem('gedScoresV1');
+    return saved ? JSON.parse(saved) : {};
   });
 
   useEffect(() => {
-    localStorage.setItem('detVocabScores', JSON.stringify(roundScores));
+    localStorage.setItem('betScoresV6', JSON.stringify(roundScores));
   }, [roundScores]);
 
   useEffect(() => {
-    if (gameState === 'SUMMARY') {
-      let p1Score = 0;
-      let p2Score = 0;
-      currentPool.forEach(wordObj => {
-        if (scores[wordObj.word]?.p1) p1Score += 1;
-        if (wordObj.isReal && scores[wordObj.word]?.p2) p2Score += 2;
-      });
-      const totalScore = p1Score + p2Score;
-      setRoundScores(prev => ({ ...prev, [roundIndex]: totalScore }));
-    }
-  }, [gameState, currentPool, roundIndex, scores]);
+    localStorage.setItem('gedScoresV1', JSON.stringify(gedScores));
+  }, [gedScores]);
 
-  const startRound = (rIndex) => {
+  useEffect(() => {
+    localStorage.setItem('betProfile', JSON.stringify(profile));
+  }, [profile]);
+
+  // --- DET Logic ---
+  const loadPoolForRound = (rIndex) => {
     const realStart = (rIndex * 10) % REAL_WORDS.length;
     const fakeStart = (rIndex * 10) % FAKE_WORDS.length;
     let roundReal = REAL_WORDS.slice(realStart, realStart + 10);
     let roundFake = FAKE_WORDS.slice(fakeStart, fakeStart + 10);
-    const combined = [...roundReal, ...roundFake].sort(() => Math.random() - 0.5);
-    
-    setRoundIndex(rIndex);
-    setCurrentPool(combined);
-    setP2Words(combined.filter(w => w.isReal));
-    setWordIndex(0);
-    setTimer(5);
-    setScores({});
-    setGameState('P1_Q');
+    return [...roundReal, ...roundFake].sort(() => Math.random() - 0.5);
   };
 
-  useEffect(() => {
-    let interval;
-    if (gameState === 'P1_Q' && timer > 0) {
-      interval = setInterval(() => setTimer(prev => prev - 1), 1000);
-    } else if (gameState === 'P1_Q' && timer === 0) {
-      handleP1Answer(null);
-    }
-    return () => clearInterval(interval);
-  }, [gameState, timer]);
-
-  const getPrefixLength = (word) => {
-    if (word.length <= 4) return 1;
-    if (word.length <= 8) return 2;
-    return 3;
+  const startMode = (rIndex, mode) => {
+    setActiveRound(rIndex); 
+    setCurrentPool(loadPoolForRound(rIndex)); 
+    setAppState(mode);
   };
 
-  useEffect(() => {
-    if (gameState === 'P2_Q' && p2Words[wordIndex]) {
-      const targetWord = p2Words[wordIndex].word;
-      const pLen = getPrefixLength(targetWord);
-      setP2Input(targetWord.substring(0, pLen));
-      setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 50);
-    }
-  }, [gameState, wordIndex, p2Words]);
-
-  const handleP1Answer = (choice) => {
-    const currentWord = currentPool[wordIndex];
-    let isCorrect = false;
-    if (choice === 'yes' && currentWord.isReal) isCorrect = true;
-    if (choice === 'no' && !currentWord.isReal) isCorrect = true;
-
-    setUserAnswer({ choice, isCorrect });
-    setScores(prev => ({ ...prev, [currentWord.word]: { ...prev[currentWord.word], p1: isCorrect } }));
-    setGameState('P1_A');
-    
-    if (currentWord.isReal) speak(currentWord.word);
+  const pushToDatabase = (section, score, isFirstTry) => {
+    if (!profile.praId || !profile.name) return;
+    const normalizedScore = section === 'p1' ? Math.floor(score / 2) : score;
+    const payload = {
+      praId: profile.praId,
+      name: profile.name,
+      level: activeRound + 1,
+      section: section,
+      score: normalizedScore,
+      isFirstTry: isFirstTry,
+      timestamp: new Date().toISOString()
+    };
+    console.log("📡 [Groundwork] Pushing to Google Sheets:", payload);
   };
 
-  const nextP1Question = () => {
-    if (wordIndex < currentPool.length - 1) {
-      setWordIndex(prev => prev + 1);
-      setTimer(5);
-      setGameState('P1_Q');
-    } else {
-      setWordIndex(0);
-      setGameState('P2_Q');
-    }
-  };
+  const saveScore = (section, score) => {
+    setRoundScores(prev => {
+      const levelData = prev[activeRound] || {};
+      const sectionData = levelData[section] || {};
+      const isFirstTry = sectionData.first === undefined;
+      const firstScore = isFirstTry ? score : sectionData.first;
+      pushToDatabase(section, score, isFirstTry);
 
-  const handleP2Submit = (e) => {
-    e.preventDefault();
-    const currentWord = p2Words[wordIndex];
-    const prefixLen = getPrefixLength(currentWord.word);
-    
-    if (p2Input.length <= prefixLen) return;
-
-    const isCorrect = p2Input.trim().toLowerCase() === currentWord.word.toLowerCase();
-    setUserAnswer({ choice: p2Input, isCorrect });
-    setScores(prev => ({ ...prev, [currentWord.word]: { ...prev[currentWord.word], p2: isCorrect } }));
-    setGameState('P2_A');
-    speak(currentWord.word);
-  };
-
-  const nextP2Question = () => {
-    if (wordIndex < p2Words.length - 1) {
-      setWordIndex(prev => prev + 1);
-      setGameState('P2_Q');
-    } else {
-      setGameState('SUMMARY');
-    }
-  };
-
-  const renderSentenceWithBlanks = (wordObj, inputValue, isAnswered) => {
-    if (!wordObj) return null;
-    const root = wordObj.word.length > 4 ? wordObj.word.substring(0, 4) : wordObj.word.substring(0, 3);
-    const regex = new RegExp(`\\b${root}\\w*\\b`, 'i');
-    const match = wordObj.sent.match(regex);
-
-    let beforeText = wordObj.sent;
-    let afterText = "";
-
-    if (match) {
-      const index = match.index;
-      beforeText = wordObj.sent.substring(0, index);
-      afterText = wordObj.sent.substring(index + match[0].length);
-    } else {
-      beforeText = wordObj.sent + " ";
-    }
-
-    const prefixLen = getPrefixLength(wordObj.word);
-    const boxes = Array.from({ length: wordObj.word.length }).map((_, i) => {
-      const letter = inputValue[i] || '';
-      const isPrefix = i < prefixLen;
-      let borderClass = 'border-[#e5e5e5] bg-white text-gray-800';
-      
-      if (isAnswered) {
-        if (inputValue.toLowerCase() === wordObj.word.toLowerCase()) {
-          borderClass = 'border-[#58A700] bg-[#E5F8E5] text-[#58A700]';
-        } else {
-          borderClass = 'border-[#EA4335] bg-[#FFE5E5] text-[#EA4335]';
+      return {
+        ...prev,
+        [activeRound]: {
+          ...levelData,
+          [section]: {
+            first: firstScore,
+            current: score > (sectionData.current || 0) ? score : (sectionData.current || score) 
+          }
         }
-      } else if (isPrefix) {
-        borderClass = 'border-[#e5e5e5] bg-gray-50 text-gray-700';
-      }
-
-      return (
-        <div key={i} className={`w-8 h-10 sm:w-[42px] sm:h-[48px] border-2 flex items-center justify-center font-semibold text-lg sm:text-xl uppercase transition-colors rounded-lg ${borderClass}`}>
-          {letter}
-        </div>
-      );
+      };
     });
-
-    return (
-      <div className="text-xl sm:text-[22px] font-normal text-[#4b4b4b] leading-[3rem] text-center sm:text-left break-words w-full">
-        <span>{beforeText}</span>
-        <span className="inline-flex relative align-middle mx-1 sm:mx-2 top-[-2px]">
-          <input
-            ref={inputRef}
-            type="text"
-            disabled={isAnswered}
-            value={inputValue}
-            onChange={(e) => {
-              let val = e.target.value;
-              const prefix = wordObj.word.substring(0, prefixLen);
-              if (val.length < prefixLen) {
-                val = prefix;
-              } else if (!val.toLowerCase().startsWith(prefix.toLowerCase())) {
-                val = prefix + val.substring(prefixLen);
-              }
-              if (val.length > wordObj.word.length) {
-                val = val.substring(0, wordObj.word.length);
-              }
-              setP2Input(val);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Backspace' && e.target.selectionStart === prefixLen && e.target.selectionEnd === prefixLen) {
-                e.preventDefault();
-              }
-            }}
-            className="absolute inset-0 w-full h-full opacity-0 cursor-text z-10"
-            autoComplete="off"
-            spellCheck="false"
-          />
-          <div className="flex gap-1 pointer-events-none">{boxes}</div>
-        </span>
-        <span>{afterText}</span>
-      </div>
-    );
+    setAppState('MENU');
   };
+
+  // --- NEW: GED Logic ---
+  const startGedMode = (lessonObj, mode) => {
+    setActiveGedLesson(lessonObj);
+    setAppState(mode);
+  };
+
+  const saveGedScore = (lessonId, score) => {
+    setGedScores(prev => {
+      const lessonData = prev[lessonId] || {};
+      const isFirstTry = lessonData.first === undefined;
+      const firstScore = isFirstTry ? score : lessonData.first;
+      
+      // Note: You can expand pushToDatabase to handle GED scores later if desired.
+      
+      return {
+        ...prev,
+        [lessonId]: {
+          first: firstScore,
+          current: score > (lessonData.current || 0) ? score : (lessonData.current || score)
+        }
+      };
+    });
+    setAppState('MENU');
+    setActiveGedLesson(null);
+  };
+
+  const confirmReset = () => {
+    setRoundScores({});
+    setGedScores({});
+    localStorage.removeItem('betScoresV6');
+    localStorage.removeItem('gedScoresV1');
+    setShowResetModal(false);
+  };
+
+  const saveProfile = () => {
+    setProfile(tempProfile);
+    setShowProfileModal(false);
+  };
+
+  const normalizeP1 = (val) => val !== undefined ? Math.floor(val / 2) : 0;
+
+  const totalXP = Object.values(roundScores).reduce((acc, curr) => {
+    return acc + normalizeP1(curr.p1?.current) + (curr.p2?.current || 0) + (curr.p3?.current || 0) + (curr.p4?.current || 0);
+  }, 0);
+  const maxXP = 10 * 40;
+
+  const getGrade = (levelData) => {
+    if (!levelData) return null;
+    const attemptedCount = Object.keys(levelData).length;
+    if (attemptedCount < 4) return null; 
+
+    const total = normalizeP1(levelData.p1?.current) + (levelData.p2?.current || 0) + (levelData.p3?.current || 0) + (levelData.p4?.current || 0);
+    const percent = total / 40;
+    if (percent >= 0.96) return { text: "A+", color: "text-green-700 bg-green-100 border-green-300" };
+    if (percent >= 0.90) return { text: "A", color: "text-green-600 bg-green-50 border-green-200" };
+    if (percent >= 0.80) return { text: "B", color: "text-blue-600 bg-blue-50 border-blue-200" };
+    if (percent >= 0.70) return { text: "C", color: "text-yellow-600 bg-yellow-50 border-yellow-200" };
+    return { text: "Needs Review", color: "text-red-600 bg-red-50 border-red-200" };
+  };
+
+  // Helper component for GED placeholder screens
+  const GedPlaceholder = ({ title, icon: Icon, colorClass }) => (
+    <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-6">
+      <div className={`w-24 h-24 rounded-full flex items-center justify-center mb-6 shadow-lg ${colorClass}`}>
+        <Icon className="w-12 h-12 text-white" />
+      </div>
+      <h1 className="text-4xl font-black text-gray-800 mb-4">{title}</h1>
+      <p className="text-gray-500 mb-8 font-medium">Activity component is currently under construction.</p>
+      <button 
+        onClick={() => setAppState('MENU')}
+        className="flex items-center px-6 py-3 bg-gray-800 hover:bg-gray-700 text-white font-bold rounded-xl transition-all shadow-sm"
+      >
+        <ChevronLeft className="w-5 h-5 mr-2" />
+        Back to Dashboard
+      </button>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-[#FFFFFF] text-[#3F3F3F] font-sans overflow-hidden flex flex-col relative selection:bg-blue-100">
-      
-      {gameState === 'START' && (
-        <div className="flex-1 flex flex-col items-center justify-center p-6 bg-gray-50 overflow-y-auto">
-          <div className="max-w-4xl w-full bg-white rounded-3xl shadow-xl overflow-hidden border border-gray-100 my-8">
-            <div className="bg-[#1CB0F6] p-10 text-center text-white">
-              <BookOpen className="w-16 h-16 mx-auto mb-4 opacity-90" />
-              <h1 className="text-3xl sm:text-4xl font-black mb-2">DET Vocabulary Builder</h1>
-              <p className="text-lg opacity-90">Master all 200 high-frequency words for the Duolingo English Test.</p>
-            </div>
-            <div className="p-6 sm:p-10 space-y-8">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="flex items-start bg-blue-50 p-4 rounded-2xl border border-blue-100">
-                  <div className="bg-white p-2 rounded-full mr-4 text-[#1CB0F6] shadow-sm font-bold">P1</div>
-                  <div>
-                    <h3 className="text-lg font-bold mb-1">Read & Select</h3>
-                    <p className="text-gray-500 text-sm">Quickly identify if the word is a real English word. Watch out for fake DET traps!</p>
-                  </div>
-                </div>
-                <div className="flex items-start bg-green-50 p-4 rounded-2xl border border-green-100">
-                  <div className="bg-white p-2 rounded-full mr-4 text-[#58A700] shadow-sm font-bold">P2</div>
-                  <div>
-                    <h3 className="text-lg font-bold mb-1">Fill in the Blanks</h3>
-                    <p className="text-gray-500 text-sm">Read the sentence and definition, then type the missing letters to complete the target word.</p>
-                  </div>
+    <div className="min-h-screen bg-slate-50 text-gray-800 font-sans selection:bg-blue-100 relative">
+      {appState === 'MENU' && (
+        <div className="min-h-screen flex flex-col items-center">
+          
+          <div className="absolute top-4 right-4 z-50">
+            <button 
+              onClick={() => { setTempProfile(profile); setShowProfileModal(true); }}
+              className="flex items-center bg-white/20 hover:bg-white/30 backdrop-blur-md border border-white/30 text-white shadow-sm px-4 py-2 rounded-full transition-all text-sm font-bold tracking-wide"
+            >
+              <UserCircle2 className="w-5 h-5 mr-2 opacity-90" />
+              {profile.name ? `${profile.name} (ID: ${profile.praId})` : 'Set Student ID'}
+            </button>
+          </div>
+
+          <div className="w-full bg-gradient-to-br from-[#1CB0F6] to-[#1899D6] px-6 py-16 pt-24 text-center shadow-md relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-full opacity-10 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] pointer-events-none"></div>
+            <div className="relative z-10 max-w-2xl mx-auto flex flex-col items-center">
+              <div className="bg-white/20 p-4 rounded-full inline-block mb-6 backdrop-blur-sm border border-white/20">
+                <BookOpen className="w-12 h-12 text-white" strokeWidth={2.5} />
+              </div>
+              <h1 className="text-4xl sm:text-5xl font-black mb-4 text-white tracking-tight drop-shadow-sm">Study Dashboard</h1>
+              <div className="inline-flex items-center bg-white/20 rounded-2xl p-4 backdrop-blur-md border border-white/30 shadow-sm">
+                <div className="bg-white/30 p-3 rounded-xl mr-4 shadow-sm"><Trophy className="w-8 h-8 text-yellow-300 drop-shadow-sm" /></div>
+                <div className="text-left">
+                  <div className="text-blue-100 text-xs font-bold uppercase tracking-widest mb-0.5">DET Global Mastery</div>
+                  <div className="text-white font-black text-2xl tracking-tight drop-shadow-sm">{totalXP} <span className="text-blue-100 text-base font-bold">/ {maxXP} XP</span></div>
                 </div>
               </div>
+            </div>
+          </div>
+          
+          {/* ========================================= */}
+          {/* NEW SECTION: GED PREPARATION (4 Columns) */}
+          {/* ========================================= */}
+          <div className="max-w-7xl w-full px-4 sm:px-6 -mt-8 relative z-20 mb-8">
+            <div className="bg-white rounded-[2rem] shadow-xl p-6 sm:p-10 border border-gray-100">
+              <h3 className="text-2xl font-black text-gray-800 tracking-tight mb-8">GED Preparation</h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                
+                {/* English Column (UPDATED with Level Lists) */}
+                <div className="bg-blue-50/50 rounded-3xl p-5 border-2 border-blue-100">
+                  <div className="flex items-center mb-5">
+                    <div className="bg-blue-500 p-2 rounded-lg mr-3 shadow-sm"><BookText className="w-5 h-5 text-white" /></div>
+                    <h4 className="font-black text-lg text-gray-800">English (RLA)</h4>
+                  </div>
+                  
+                  {/* Reading Lessons Iterator */}
+                  <div className="mb-4">
+                    <h5 className="text-xs font-bold text-blue-500 uppercase tracking-wider mb-2 ml-1">Reading Comprehension</h5>
+                    <div className="space-y-2">
+                      {gedData.rlaReading.map((lesson) => {
+                        const scoreData = gedScores[lesson.id];
+                        return (
+                          <button 
+                            key={lesson.id} 
+                            onClick={() => startGedMode(lesson, 'GED_RLA_READING')} 
+                            className="w-full flex flex-col items-start px-4 py-3 bg-white rounded-xl border-b-4 border-2 border-gray-200 border-b-gray-300 hover:bg-gray-50 active:border-b-0 active:translate-y-[4px] transition-all"
+                          >
+                            <div className="flex items-center w-full justify-between mb-1">
+                              <div className="flex items-center">
+                                <FileText className="w-4 h-4 mr-2 text-blue-500" />
+                                <span className="font-bold text-gray-700 text-sm truncate max-w-[140px]">{lesson.title}</span>
+                              </div>
+                              <ArrowRight className="w-4 h-4 text-gray-300" />
+                            </div>
+                            
+                            {/* Score Display Logic */}
+                            {scoreData ? (
+                              <div className="flex items-center gap-3 w-full text-[10px] font-bold uppercase tracking-wider text-gray-500 mt-1">
+                                <div className="bg-gray-100 px-2 py-0.5 rounded">First: <span className="text-blue-600">{scoreData.first}/10</span></div>
+                                <div className="bg-blue-100 px-2 py-0.5 rounded text-blue-800">Best: {scoreData.current}/10</div>
+                              </div>
+                            ) : (
+                              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mt-1">Not Started</div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
 
-              <h3 className="text-xl font-bold text-gray-700 text-center uppercase tracking-widest pt-4 border-t border-gray-100">Select a Round</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-4">
-                {Array.from({ length: 10 }).map((_, i) => {
-                  const score = roundScores[i];
-                  const hasScore = score !== undefined;
-                  const pct = hasScore ? Math.round((score / 40) * 100) : 0;
-                  return (
-                    <button
-                      key={i}
-                      onClick={() => startRound(i)}
-                      className={`p-4 rounded-2xl border-b-4 transition-all flex flex-col items-center justify-center ${hasScore ? 'bg-green-50 border-green-200 hover:bg-green-100' : 'bg-white border-gray-200 hover:border-[#1CB0F6] hover:shadow-md'}`}
-                    >
-                      <span className="font-bold text-lg text-gray-700 mb-1">Round {i + 1}</span>
-                      {hasScore ? (
-                        <div className="text-center">
-                          <div className="text-[#58A700] font-black text-xl">{score} <span className="text-xs font-bold text-gray-400">/ 40</span></div>
-                          <div className="text-xs text-green-600 font-bold bg-green-100 px-2 py-0.5 rounded-full mt-1">{pct}%</div>
-                        </div>
-                      ) : (
-                        <span className="text-gray-400 text-xs font-bold uppercase mt-2">Not Played</span>
-                      )}
+                  {/* Grammar Placeholders */}
+                  <div>
+                    <h5 className="text-xs font-bold text-blue-500 uppercase tracking-wider mb-2 ml-1">Grammar Editing</h5>
+                    <button onClick={() => setAppState('GED_RLA_GRAMMAR')} className="w-full group flex items-center px-4 py-3 bg-white rounded-xl border-b-4 border-2 border-gray-200 border-b-gray-300 hover:bg-gray-50 active:border-b-0 active:translate-y-[4px] transition-all">
+                      <LayoutList className="w-4 h-4 mr-3 text-blue-500" />
+                      <span className="font-bold text-gray-700 text-sm">Grammar P1 (Coming)</span>
                     </button>
+                  </div>
+                </div>
+
+                {/* Social Studies Column */}
+                <div className="bg-purple-50/50 rounded-3xl p-5 border-2 border-purple-100">
+                  <div className="flex items-center mb-5">
+                    <div className="bg-purple-500 p-2 rounded-lg mr-3 shadow-sm"><Globe className="w-5 h-5 text-white" /></div>
+                    <h4 className="font-black text-lg text-gray-800">Social Studies</h4>
+                  </div>
+                  <div className="space-y-3">
+                    <button onClick={() => setAppState('GED_SS_HISTORY')} className="w-full group flex items-center px-4 py-3 bg-white rounded-xl border-b-4 border-2 border-gray-200 border-b-gray-300 hover:bg-gray-50 active:border-b-0 active:translate-y-[4px] transition-all">
+                      <BookOpen className="w-4 h-4 mr-3 text-purple-500" />
+                      <span className="font-bold text-gray-700 text-sm">US History</span>
+                    </button>
+                    <button onClick={() => setAppState('GED_SS_ECON')} className="w-full group flex items-center px-4 py-3 bg-white rounded-xl border-b-4 border-2 border-gray-200 border-b-gray-300 hover:bg-gray-50 active:border-b-0 active:translate-y-[4px] transition-all">
+                      <LayoutList className="w-4 h-4 mr-3 text-purple-500" />
+                      <span className="font-bold text-gray-700 text-sm">Economics</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Science Column */}
+                <div className="bg-green-50/50 rounded-3xl p-5 border-2 border-green-100 opacity-60 grayscale transition-all hover:grayscale-0 hover:opacity-100">
+                  <div className="flex items-center mb-5">
+                    <div className="bg-green-500 p-2 rounded-lg mr-3 shadow-sm"><FlaskConical className="w-5 h-5 text-white" /></div>
+                    <h4 className="font-black text-lg text-gray-800">Science</h4>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="w-full text-center px-4 py-3 bg-white rounded-xl border-2 border-gray-200 border-dashed">
+                      <span className="font-bold text-gray-400 text-sm">Coming Soon</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Math Column */}
+                <div className="bg-orange-50/50 rounded-3xl p-5 border-2 border-orange-100 opacity-60 grayscale transition-all hover:grayscale-0 hover:opacity-100">
+                  <div className="flex items-center mb-5">
+                    <div className="bg-orange-500 p-2 rounded-lg mr-3 shadow-sm"><Calculator className="w-5 h-5 text-white" /></div>
+                    <h4 className="font-black text-lg text-gray-800">Math</h4>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="w-full text-center px-4 py-3 bg-white rounded-xl border-2 border-gray-200 border-dashed">
+                      <span className="font-bold text-gray-400 text-sm">Coming Soon</span>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </div>
+
+          {/* ========================================= */}
+          {/* ORIGINAL SECTION: DET VOCAB PATH          */}
+          {/* ========================================= */}
+          <div className="max-w-6xl w-full px-4 sm:px-6 relative z-20 pb-20">
+            <div className="bg-white rounded-[2rem] shadow-xl p-6 sm:p-10 border border-gray-100">
+              <div className="flex items-center justify-between mb-8 px-2">
+                <h3 className="text-2xl font-black text-gray-800 tracking-tight">DET Learning Path</h3>
+              </div>
+              
+              <div className="space-y-8">
+                {Array.from({ length: 10 }).map((_, i) => {
+                  const s = roundScores[i] || {};
+                  const levelTotal = normalizeP1(s.p1?.current) + (s.p2?.current || 0) + (s.p3?.current || 0) + (s.p4?.current || 0);
+                  const hasStarted = Object.keys(s).length > 0;
+                  const grade = getGrade(s);
+
+                  return (
+                    <div key={i} className="rounded-3xl p-6 border-2 border-gray-100 bg-white shadow-sm">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6">
+                        <div className="flex items-center">
+                          <div className="w-12 h-12 rounded-xl bg-gray-100 flex items-center justify-center font-black text-xl mr-4 text-gray-500">{i + 1}</div>
+                          <div>
+                            <h4 className="font-black text-xl text-gray-800 tracking-tight">Level {i + 1}</h4>
+                            <p className="text-sm font-bold text-gray-400">10 Core Words</p>
+                          </div>
+                        </div>
+                        
+                        {hasStarted ? (
+                          <div className="flex items-center space-x-3 mt-4 sm:mt-0">
+                            <div className="px-5 py-2.5 rounded-2xl font-black border-2 border-yellow-200 bg-yellow-50 text-[#FFC800] flex items-center text-sm uppercase tracking-widest shadow-sm">
+                              <Trophy className="w-5 h-5 mr-2.5 fill-current" />
+                              {levelTotal} / 40 XP
+                            </div>
+                            {grade && (
+                              <div className={`px-4 py-2.5 rounded-2xl font-black border-2 text-sm uppercase tracking-wider ${grade.color}`}>
+                                {grade.text}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="mt-4 sm:mt-0 px-4 py-2.5 rounded-2xl font-bold border-2 border-gray-100 bg-gray-50 text-gray-400 text-sm uppercase tracking-widest">
+                            Not Started
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                        {/* Recognition */}
+                        <button onClick={() => startMode(i, 'WORD_REC')} className="group flex flex-col justify-center px-4 py-4 rounded-2xl border-b-4 border-2 transition-all active:border-b-0 active:translate-y-[4px] bg-[#58A700] border-[#468500] hover:bg-[#468500]">
+                          <div className="flex items-center w-full mb-1.5">
+                            <Search className="w-5 h-5 mr-2 text-white opacity-90"/> 
+                            <span className="font-bold text-white">Recognition</span>
+                          </div>
+                          {s.p1 ? (
+                            <div className="flex items-center gap-3 w-full text-[11px] font-bold uppercase tracking-wider text-green-100/90">
+                              <div>First: <span className="text-white">{normalizeP1(s.p1.first)}/10</span></div>
+                              <div>Best: <span className="text-white">{normalizeP1(s.p1.current)}/10</span></div>
+                            </div>
+                          ) : <div className="text-left text-[11px] font-bold text-green-100/80 uppercase">Not Started</div>}
+                        </button>
+                        
+                        {/* Spelling */}
+                        <button onClick={() => startMode(i, 'SPELLING')} className="group flex flex-col justify-center px-4 py-4 rounded-2xl border-b-4 border-2 transition-all active:border-b-0 active:translate-y-[4px] bg-[#1CB0F6] border-[#1899D6] hover:bg-[#1899D6]">
+                          <div className="flex items-center w-full mb-1.5">
+                            <Keyboard className="w-5 h-5 mr-2 text-white opacity-90"/> 
+                            <span className="font-bold text-white">Spelling</span>
+                          </div>
+                          {s.p2 ? (
+                            <div className="flex items-center gap-3 w-full text-[11px] font-bold uppercase tracking-wider text-blue-100/90">
+                              <div>First: <span className="text-white">{s.p2.first}/10</span></div>
+                              <div>Best: <span className="text-white">{s.p2.current}/10</span></div>
+                            </div>
+                          ) : <div className="text-left text-[11px] font-bold text-blue-100/80 uppercase">Not Started</div>}
+                        </button>
+
+                        {/* Reading */}
+                        <button onClick={() => startMode(i, 'READ_COMP')} className="group flex flex-col justify-center px-4 py-4 rounded-2xl border-b-4 border-2 transition-all active:border-b-0 active:translate-y-[4px] bg-[#FF9600] border-[#D17A00] hover:bg-[#E58700]">
+                          <div className="flex items-center w-full mb-1.5">
+                            <FileText className="w-5 h-5 mr-2 text-white opacity-90"/> 
+                            <span className="font-bold text-white">Reading</span>
+                          </div>
+                          {s.p4 ? (
+                            <div className="flex items-center gap-3 w-full text-[11px] font-bold uppercase tracking-wider text-orange-100/90">
+                              <div>First: <span className="text-white">{s.p4.first}/10</span></div>
+                              <div>Best: <span className="text-white">{s.p4.current}/10</span></div>
+                            </div>
+                          ) : <div className="text-left text-[11px] font-bold text-orange-100/80 uppercase">Not Started</div>}
+                        </button>
+
+                        {/* Listening */}
+                        <button onClick={() => startMode(i, 'DICTATION')} className="group flex flex-col justify-center px-4 py-4 rounded-2xl border-b-4 border-2 transition-all active:border-b-0 active:translate-y-[4px] bg-[#CE82FF] border-[#B560EF] hover:bg-[#C26BFF]">
+                          <div className="flex items-center w-full mb-1.5">
+                            <Headphones className="w-5 h-5 mr-2 text-white opacity-90"/> 
+                            <span className="font-bold text-white">Listening</span>
+                          </div>
+                          {s.p3 ? (
+                            <div className="flex items-center gap-3 w-full text-[11px] font-bold uppercase tracking-wider text-purple-100/90">
+                              <div>First: <span className="text-white">{s.p3.first}/10</span></div>
+                              <div>Best: <span className="text-white">{s.p3.current}/10</span></div>
+                            </div>
+                          ) : <div className="text-left text-[11px] font-bold text-purple-100/80 uppercase">Not Started</div>}
+                        </button>
+                      </div>
+                    </div>
                   );
                 })}
               </div>
-              
+
               {Object.keys(roundScores).length > 0 && (
-                <div className="mt-8 pt-6 border-t border-gray-100 text-center">
-                  <button
-                    onClick={() => {
-                      if (window.confirm('Are you sure you want to reset all your progress? This cannot be undone.')) {
-                        setRoundScores({});
-                        localStorage.removeItem('detVocabScores');
-                      }
-                    }}
-                    className="text-gray-400 hover:text-red-500 font-bold text-sm uppercase tracking-wider transition-colors"
-                  >
-                    Reset All Progress
-                  </button>
+                <div className="mt-12 pt-8 border-t-2 border-dashed border-gray-100 text-center">
+                  <button onClick={() => setShowResetModal(true)} className="text-gray-400 hover:text-[#EA4335] font-bold text-sm uppercase tracking-widest transition-colors">Reset Progress</button>
                 </div>
               )}
             </div>
@@ -285,160 +442,63 @@ export default function App() {
         </div>
       )}
 
-      {(gameState === 'P1_Q' || gameState === 'P1_A') && (
-        <div className="flex-1 flex flex-col relative bg-white">
-          <TopBar showTimer={gameState === 'P1_Q'} timer={timer} onSkip={() => setGameState('SUMMARY')} resetToStart={() => setGameState('START')} />
-          <div className="flex-1 flex flex-col items-center justify-center p-6 pb-40">
-            <h2 className="text-2xl sm:text-3xl font-bold text-gray-700 mb-8 sm:mb-12">Is this a real English word?</h2>
-            <div className="text-5xl sm:text-7xl font-semibold tracking-wide text-gray-900 mb-16 text-center break-all">
-              {currentPool[wordIndex]?.word}
+      {/* Profile Modal */}
+      {showProfileModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-[2rem] p-8 max-w-sm w-full shadow-2xl transform scale-100 animate-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 bg-blue-50 text-[#1CB0F6] rounded-full flex items-center justify-center mx-auto mb-6"><UserCircle2 className="w-8 h-8" strokeWidth={2.5} /></div>
+            <h2 className="text-2xl font-black text-gray-800 mb-2 text-center">Student Profile</h2>
+            <div className="space-y-4 mb-8">
+              <div>
+                <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1.5 ml-1">First Name</label>
+                <input type="text" value={tempProfile.name} onChange={(e) => setTempProfile({...tempProfile, name: e.target.value})} className="w-full bg-gray-50 border-2 border-gray-200 rounded-xl px-4 py-3 font-medium text-gray-800 focus:outline-none focus:border-[#1CB0F6] focus:bg-white transition-colors" placeholder="e.g. John"/>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-1.5 ml-1">PRA ID (3 Digits)</label>
+                <input type="text" maxLength={3} value={tempProfile.praId} onChange={(e) => setTempProfile({...tempProfile, praId: e.target.value.replace(/[^0-9]/g, '')})} className="w-full bg-gray-50 border-2 border-gray-200 rounded-xl px-4 py-3 font-medium text-gray-800 focus:outline-none focus:border-[#1CB0F6] focus:bg-white transition-colors text-center tracking-widest text-lg" placeholder="123"/>
+              </div>
             </div>
-            <div className="flex space-x-6 sm:space-x-10">
-              <button
-                disabled={gameState === 'P1_A'}
-                onClick={() => handleP1Answer('yes')}
-                className={`flex flex-col items-center justify-center w-36 h-36 sm:w-48 sm:h-48 border-[3px] rounded-3xl transition-all ${gameState === 'P1_A' && userAnswer?.choice !== 'yes' ? 'opacity-40 bg-gray-50 border-gray-200' : 'bg-white border-gray-200 hover:bg-gray-50 hover:border-gray-300 shadow-sm active:transform active:scale-95'}`}
-              >
-                <Check className="w-16 h-16 sm:w-20 sm:h-20 text-[#1CB0F6] mb-3" />
-                <span className="font-bold text-xl text-gray-600 uppercase tracking-widest">Yes</span>
-              </button>
-              <button
-                disabled={gameState === 'P1_A'}
-                onClick={() => handleP1Answer('no')}
-                className={`flex flex-col items-center justify-center w-36 h-36 sm:w-48 sm:h-48 border-[3px] rounded-3xl transition-all ${gameState === 'P1_A' && userAnswer?.choice !== 'no' ? 'opacity-40 bg-gray-50 border-gray-200' : 'bg-white border-gray-200 hover:bg-gray-50 hover:border-gray-300 shadow-sm active:transform active:scale-95'}`}
-              >
-                <XIcon className="w-16 h-16 sm:w-20 sm:h-20 text-[#1CB0F6] mb-3" />
-                <span className="font-bold text-xl text-gray-600 uppercase tracking-widest">No</span>
-              </button>
+            <div className="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3">
+              <button onClick={() => setShowProfileModal(false)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3.5 rounded-xl uppercase tracking-widest text-sm">Cancel</button>
+              <button disabled={!tempProfile.name || tempProfile.praId.length !== 3} onClick={saveProfile} className="flex-1 bg-[#1CB0F6] hover:bg-[#1899D6] text-white font-bold py-3.5 rounded-xl shadow-sm uppercase tracking-widest text-sm border-b-4 border-[#1899D6] active:border-b-0 active:translate-y-[4px] disabled:opacity-50">Save</button>
             </div>
           </div>
-          {gameState === 'P1_A' && <FeedbackBanner isCorrect={userAnswer?.isCorrect} currentWord={currentPool[wordIndex]} isPhase1={true} onNext={nextP1Question} />}
         </div>
       )}
 
-      {(gameState === 'P2_Q' || gameState === 'P2_A') && (
-        <div className="flex-1 flex flex-col relative bg-white">
-          <TopBar showTimer={false} onSkip={() => setGameState('SUMMARY')} resetToStart={() => setGameState('START')} />
-          <div className="flex-1 flex flex-col items-center justify-center p-6 pb-48 max-w-4xl mx-auto w-full">
-            <h2 className="text-2xl sm:text-[28px] font-bold text-[#4b4b4b] mb-12 text-center w-full">
-              Complete the sentence with the correct word
-            </h2>
-            <div className="w-full flex flex-col items-center">
-              <form onSubmit={handleP2Submit} className="w-full relative flex flex-col items-center max-w-3xl">
-                {renderSentenceWithBlanks(p2Words[wordIndex], p2Input, gameState === 'P2_A')}
-                {gameState === 'P2_Q' && (
-                  <button
-                    type="submit"
-                    disabled={p2Input.length <= getPrefixLength(p2Words[wordIndex]?.word || '')}
-                    className="mt-12 bg-[#1CB0F6] hover:bg-[#1899D6] border-b-4 border-[#1899D6] text-white font-bold text-lg px-12 py-4 rounded-2xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Submit Answer
-                  </button>
-                )}
-              </form>
-              <div className="mt-14 max-w-2xl w-full bg-gray-50 rounded-2xl p-6 border border-gray-200 text-left shadow-sm">
-                <h4 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-3">Word Clues</h4>
-                <div className="space-y-2">
-                  <p className="text-gray-800 text-lg">
-                    <span className="font-bold text-gray-500 mr-2">Definition:</span>
-                    {p2Words[wordIndex]?.def}
-                  </p>
-                  <p className="text-gray-800 text-lg">
-                    <span className="font-bold text-gray-500 mr-2">Vietnamese:</span>
-                    {p2Words[wordIndex]?.vn}
-                  </p>
-                </div>
-              </div>
+      {/* Reset Modal */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-[2rem] p-8 max-w-sm w-full shadow-2xl text-center transform scale-100 animate-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 bg-red-50 text-[#EA4335] rounded-full flex items-center justify-center mx-auto mb-6"><AlertCircle className="w-8 h-8" strokeWidth={2.5} /></div>
+            <h2 className="text-2xl font-black text-gray-800 mb-2">Reset Progress?</h2>
+            <div className="flex flex-col sm:flex-row space-y-3 sm:space-y-0 sm:space-x-3">
+              <button onClick={() => setShowResetModal(false)} className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3.5 rounded-xl uppercase tracking-widest text-sm">Cancel</button>
+              <button onClick={confirmReset} className="flex-1 bg-[#EA4335] hover:bg-[#C9362A] text-white font-bold py-3.5 rounded-xl shadow-sm uppercase tracking-widest text-sm border-b-4 border-[#C9362A] active:border-b-0 active:translate-y-[4px]">Yes, Reset</button>
             </div>
           </div>
-          {gameState === 'P2_A' && <FeedbackBanner isCorrect={userAnswer?.isCorrect} currentWord={p2Words[wordIndex]} isPhase1={false} onNext={nextP2Question} />}
         </div>
       )}
 
-      {gameState === 'SUMMARY' && (
-        <div className="flex-1 flex flex-col bg-gray-50 h-screen overflow-y-auto">
-          <TopBar showTimer={false} resetToStart={() => setGameState('START')} />
-          <div className="max-w-4xl mx-auto w-full p-6 py-12">
-            <div className="bg-white rounded-3xl shadow-lg border border-gray-200 overflow-hidden">
-              <div className="bg-[#1CB0F6] p-8 text-white text-center">
-                <h2 className="text-3xl font-black mb-2">Round {roundIndex + 1} Complete!</h2>
-                <div className="flex items-center justify-center space-x-2 mt-2">
-                  <span className="text-lg opacity-90">Your Score:</span>
-                  <span className="text-3xl font-bold bg-white text-[#1CB0F6] px-4 py-1 rounded-full shadow-sm">{roundScores[roundIndex]} / 40</span>
-                </div>
-              </div>
-              <div className="p-0 sm:p-6 overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-gray-50 border-b-2 border-gray-100 text-gray-500 uppercase tracking-wider text-sm">
-                      <th className="p-4 font-bold rounded-tl-xl">Word</th>
-                      <th className="p-4 font-bold text-center">Read & Select</th>
-                      <th className="p-4 font-bold text-center">Spelling</th>
-                      <th className="p-4 font-bold rounded-tr-xl">Review Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {currentPool.map((wordObj, i) => {
-                      const p1Correct = scores[wordObj.word]?.p1;
-                      const p2Correct = scores[wordObj.word]?.p2;
-                      const needsReview = p1Correct === false || p2Correct === false || p1Correct === undefined;
-                      return (
-                        <tr key={i} className={`border-b border-gray-100 last:border-0 ${needsReview ? 'bg-red-50/50' : 'hover:bg-gray-50'}`}>
-                          <td className="p-4">
-                            <span className="font-bold text-lg text-gray-800">{wordObj.word}</span>
-                            {!wordObj.isReal && <span className="ml-2 text-xs font-bold px-2 py-1 bg-gray-200 text-gray-600 rounded-lg uppercase">Fake</span>}
-                          </td>
-                          <td className="p-4 text-center">
-                            {p1Correct === true ? <CheckCircle2 className="w-6 h-6 text-[#58A700] mx-auto" /> : p1Correct === false ? <XCircle className="w-6 h-6 text-[#EA4335] mx-auto" /> : '-'}
-                          </td>
-                          <td className="p-4 text-center">
-                            {wordObj.isReal ? (
-                              p2Correct === true ? <CheckCircle2 className="w-6 h-6 text-[#58A700] mx-auto" /> : p2Correct === false ? <XCircle className="w-6 h-6 text-[#EA4335] mx-auto" /> : '-'
-                            ) : (
-                              <span className="text-gray-400 text-sm">N/A</span>
-                            )}
-                          </td>
-                          <td className="p-4">
-                            {needsReview ? (
-                              <div className="flex items-start text-sm text-[#EA4335] bg-white p-3 rounded-xl border border-red-100 shadow-sm">
-                                <NotebookPen className="w-5 h-5 mr-2 flex-shrink-0 mt-0.5" />
-                                <div>
-                                  <span className="font-bold block mb-1">Add to Notebook:</span>
-                                  {wordObj.isReal ? `${wordObj.word} - ${wordObj.def} (${wordObj.vn})` : `Fake word trap imitating: ${wordObj.imitating}`}
-                                </div>
-                              </div>
-                            ) : (
-                              <span className="text-[#58A700] font-medium flex items-center text-sm">
-                                <Check className="w-4 h-4 mr-1" /> Mastered
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="p-8 bg-gray-50 border-t border-gray-100 flex flex-col sm:flex-row justify-center space-y-4 sm:space-y-0 sm:space-x-4">
-                <button
-                  onClick={() => setGameState('START')}
-                  className="bg-white border-2 border-gray-200 hover:border-gray-300 text-gray-700 font-bold text-lg px-8 py-4 rounded-2xl transition-all shadow-sm flex items-center justify-center"
-                >
-                  Back to Home
-                </button>
-                {roundIndex < 9 && (
-                  <button
-                    onClick={() => startRound(roundIndex + 1)}
-                    className="bg-[#1CB0F6] hover:bg-[#1899D6] border-b-4 border-[#1899D6] text-white font-bold text-lg px-8 py-4 rounded-2xl transition-all transform hover:scale-105 shadow-md flex items-center justify-center"
-                  >
-                    Start Round {roundIndex + 2} <ArrowRight className="w-6 h-6 ml-2" />
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* DET Modules (Unchanged) */}
+      {appState === 'WORD_REC' && <WordRecognition pool={currentPool} onComplete={(s) => saveScore('p1', s)} onQuit={() => setAppState('MENU')} />}
+      {appState === 'SPELLING' && <ContextualSpelling pool={currentPool} onComplete={(s) => saveScore('p2', s)} onQuit={() => setAppState('MENU')} />}
+      {appState === 'DICTATION' && <Dictation pool={currentPool} onComplete={(s) => saveScore('p3', s)} onQuit={() => setAppState('MENU')} />}
+      {appState === 'READ_COMP' && <ReadAndComplete levelIndex={activeRound} pool={currentPool} onComplete={(s) => saveScore('p4', s)} onQuit={() => setAppState('MENU')} />}
+
+      {/* GED Modules */}
+      {appState === 'GED_RLA_READING' && (
+        <GedReading 
+          lessonData={activeGedLesson} 
+          onComplete={(score) => saveGedScore(activeGedLesson.id, score)} 
+          onQuit={() => { setAppState('MENU'); setActiveGedLesson(null); }} 
+        />
       )}
+      
+      {/* Placeholders for future GED components */}
+      {appState === 'GED_RLA_GRAMMAR' && <GedPlaceholder title="RLA Grammar Editing" icon={LayoutList} colorClass="bg-blue-500" />}
+      {appState === 'GED_SS_HISTORY' && <GedPlaceholder title="US History Practice" icon={BookOpen} colorClass="bg-purple-500" />}
+      {appState === 'GED_SS_ECON' && <GedPlaceholder title="Economics Practice" icon={LayoutList} colorClass="bg-purple-500" />}
     </div>
   );
 }
